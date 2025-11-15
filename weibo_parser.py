@@ -17,6 +17,21 @@ from base_parser import BaseVideoParser
 class WeiboParser(BaseVideoParser):
     """微博解析器"""
 
+    # URL匹配模式（统一管理，避免重复定义）
+    URL_PATTERNS = {
+        'weibo_com': [
+            r'weibo\.com/\d+/[A-Za-z0-9]+',
+            r'weibo\.cn/status/\d+',
+        ],
+        'm_weibo_cn': [
+            r'm\.weibo\.cn/detail/\d+',
+        ],
+        'video_weibo': [
+            r'video\.weibo\.com/show\?fid=',
+            r'weibo\.com/tv/show/',
+        ],
+    }
+
     def __init__(self):
         """初始化微博解析器"""
         super().__init__("weibo")
@@ -30,14 +45,10 @@ class WeiboParser(BaseVideoParser):
         Returns:
             如果是微博链接返回True，否则返回False
         """
-        patterns = [
-            r'weibo\.com/\d+/[A-Za-z0-9]+',  # https://weibo.com/1566936885/5232446897127970 或 QdC5HtUjg
-            r'weibo\.cn/status/\d+',  # https://weibo.cn/status/5232446897127970
-            r'm\.weibo\.cn/detail/\d+',  # https://m.weibo.cn/detail/5221716881314113
-            r'video\.weibo\.com/show\?fid=',  # https://video.weibo.com/show?fid=1034:5233218052358208
-            r'weibo\.com/tv/show/',  # https://weibo.com/tv/show/1034:5233218052358208
-        ]
-        return any(re.search(pattern, url) for pattern in patterns)
+        all_patterns = []
+        for patterns in self.URL_PATTERNS.values():
+            all_patterns.extend(patterns)
+        return any(re.search(pattern, url) for pattern in all_patterns)
 
     def extract_links(self, text: str) -> List[str]:
         """从文本中提取微博链接
@@ -49,7 +60,7 @@ class WeiboParser(BaseVideoParser):
             提取到的微博链接列表
         """
         patterns = [
-            r'https?://weibo\.com/\d+/[A-Za-z0-9]+',  # 数字ID或短ID格式
+            r'https?://weibo\.com/\d+/[A-Za-z0-9]+',
             r'https?://weibo\.cn/status/\d+',
             r'https?://m\.weibo\.cn/detail/\d+',
             r'https?://video\.weibo\.com/show\?fid=[\d:]+',
@@ -57,9 +68,8 @@ class WeiboParser(BaseVideoParser):
         ]
         links = []
         for pattern in patterns:
-            matches = re.findall(pattern, text)
-            links.extend(matches)
-        return list(set(links))  # 去重
+            links.extend(re.findall(pattern, text))
+        return list(set(links))
 
     def _get_url_type(self, url: str) -> str:
         """根据URL判断微博链接类型
@@ -73,15 +83,10 @@ class WeiboParser(BaseVideoParser):
         Raises:
             ValueError: 无法识别的URL类型
         """
-        if (re.search(r'weibo\.com/\d+/[A-Za-z0-9]+', url) or 
-            re.search(r'weibo\.cn/status/\d+', url)):
-            return 'weibo_com'
-        elif re.search(r'm\.weibo\.cn/detail/\d+', url):
-            return 'm_weibo_cn'
-        elif re.search(r'video\.weibo\.com/show\?fid=', url) or re.search(r'weibo\.com/tv/show/', url):
-            return 'video_weibo'
-        else:
-            raise ValueError(f"无法识别的URL类型: {url}")
+        for url_type, patterns in self.URL_PATTERNS.items():
+            if any(re.search(pattern, url) for pattern in patterns):
+                return url_type
+        raise ValueError(f"无法识别的URL类型: {url}")
 
     def _extract_page_id(self, url: str) -> str:
         """从微博 URL 中提取页面 ID
@@ -183,7 +188,147 @@ class WeiboParser(BaseVideoParser):
             if not cookies:
                 raise Exception("获取cookie失败：响应中未包含cookie")
             
-            return '; '.join(cookies)
+            cookie_str = '; '.join(cookies)
+            
+            # 检查是否有XSRF-TOKEN，如果没有则访问一次weibo.com页面获取
+            if 'XSRF-TOKEN' not in cookie_str:
+                # 访问weibo.com首页获取XSRF-TOKEN
+                async with session.get('https://weibo.com', headers={'user-agent': headers['user-agent']}) as page_response:
+                    if page_response.status == 200:
+                        # 从响应cookie中获取XSRF-TOKEN
+                        for cookie in page_response.cookies.values():
+                            if cookie.key == 'XSRF-TOKEN':
+                                cookies.append(f"{cookie.key}={cookie.value}")
+                                cookie_str = '; '.join(cookies)
+                                break
+            
+            return cookie_str
+
+    def _format_author(self, screen_name: str, user_id: str) -> str:
+        """格式化作者字段
+        
+        Args:
+            screen_name: 用户名
+            user_id: 用户ID
+            
+        Returns:
+            格式化后的作者字符串，格式: {用户名}(uid:{uid})
+        """
+        if screen_name and user_id:
+            return f"{screen_name}(uid:{user_id})"
+        return screen_name or ''
+
+    def _determine_media_type(self, pic_num: int, media_urls: List[str]) -> str:
+        """判断媒体类型
+        
+        Args:
+            pic_num: 图片数量
+            media_urls: 媒体URL列表
+            
+        Returns:
+            媒体类型: 'gallery', 'video', 'image'
+        """
+        if pic_num > 1:
+            return "gallery"
+        elif any('video' in u.lower() or '.mp4' in u.lower() for u in media_urls):
+            return "video"
+        else:
+            return "image"
+
+    def _normalize_url(self, url: str) -> str:
+        """规范化URL，补全协议
+        
+        Args:
+            url: 原始URL
+            
+        Returns:
+            规范化后的URL
+        """
+        if url.startswith('//'):
+            return 'https:' + url
+        return url
+
+    def _extract_video_url_from_dict(self, urls: Dict[str, str]) -> Optional[str]:
+        """从URL字典中提取视频URL
+        
+        Args:
+            urls: URL字典，键为清晰度标识，值为URL
+            
+        Returns:
+            视频URL，如果不存在则返回None
+        """
+        if not urls or not isinstance(urls, dict):
+            return None
+        video_url = list(urls.values())[0]
+        return self._normalize_url(video_url) if video_url else None
+
+    def _extract_video_url_from_media_info(self, media_info: Dict[str, Any]) -> Optional[str]:
+        """从media_info中提取视频URL
+        
+        Args:
+            media_info: 媒体信息字典
+            
+        Returns:
+            视频URL，优先返回高清URL，如果不存在则返回普通URL
+        """
+        if not media_info:
+            return None
+        hd_url = media_info.get('hd_url') or media_info.get('stream_url_hd')
+        if hd_url:
+            return hd_url
+        stream_url = media_info.get('stream_url')
+        return stream_url if stream_url else None
+
+    def _extract_pic_url(self, pic_data: Dict[str, Any]) -> Optional[str]:
+        """从图片数据中提取URL，按优先级顺序尝试
+        
+        Args:
+            pic_data: 图片数据字典，可能包含 largest, original, large 等字段
+            
+        Returns:
+            图片URL，如果不存在则返回None
+        """
+        # 优先级：largest > original > large > url
+        for key in ['largest', 'original', 'large']:
+            size_info = pic_data.get(key, {})
+            if isinstance(size_info, dict):
+                url = size_info.get('url')
+                if url:
+                    return url
+        return pic_data.get('url')
+
+    def _build_result_dict(
+        self,
+        url: str,
+        media_type: str,
+        author: str,
+        desc: str,
+        timestamp: str,
+        media_urls: List[str]
+    ) -> Dict[str, Any]:
+        """构建解析结果字典
+        
+        Args:
+            url: 原始URL
+            media_type: 媒体类型
+            author: 作者
+            desc: 描述
+            timestamp: 时间戳
+            media_urls: 媒体URL列表
+            
+        Returns:
+            解析结果字典
+        """
+        return {
+            'url': url,
+            'media_type': media_type,
+            'title': '',
+            'author': author,
+            'desc': desc,
+            'timestamp': timestamp,
+            'video_size': None,
+            'media_urls': media_urls,
+        }
 
     async def _parse_weibo_com(
         self,
@@ -205,17 +350,46 @@ class WeiboParser(BaseVideoParser):
             Exception: 解析失败
         """
         page_id = self._extract_page_id(url)
-        api_url = f"https://weibo.com/ajax/statuses/show?id={page_id}"
-
+        
+        # 根据抓包结果，短ID和数字ID都使用id参数，并添加locale和isGetLongText参数
+        api_url = f"https://weibo.com/ajax/statuses/show?id={page_id}&locale=zh-CN&isGetLongText=true"
+        
+        # 从cookie中提取XSRF-TOKEN（如果存在）
+        xsrf_token = None
+        for cookie_item in cookies.split('; '):
+            if cookie_item.startswith('XSRF-TOKEN='):
+                xsrf_token = cookie_item.split('=', 1)[1]
+                break
+        
         headers = {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0',
             'referer': url,
             'cookie': cookies,
+            'accept': 'application/json, text/plain, */*',
+            'x-requested-with': 'XMLHttpRequest',
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-dest': 'empty',
+            'accept-language': 'zh-CN,zh;q=0.9',
         }
+        
+        # 如果存在XSRF-TOKEN，添加到请求头
+        if xsrf_token:
+            headers['x-xsrf-token'] = xsrf_token
 
         async with session.get(api_url, headers=headers) as response:
             if response.status == 200:
                 json_data = await response.json()
+                
+                # 检查API是否返回错误
+                if json_data.get('ok') == 0:
+                    error_msg = json_data.get('msg', '未知错误')
+                    raise Exception(f"获取微博数据失败: {error_msg}")
+                
+                # 检查返回数据的结构，可能数据在data字段中
+                if 'data' in json_data and isinstance(json_data['data'], dict):
+                    json_data = json_data['data']
+                
                 media_urls = self._extract_media_urls(json_data)
                 
                 if not media_urls:
@@ -223,38 +397,21 @@ class WeiboParser(BaseVideoParser):
                 
                 user = json_data.get('user', {})
                 pic_num = json_data.get('pic_num', 0)
-                
-                # 判断媒体类型
-                if pic_num > 1:
-                    media_type = "gallery"
-                elif any('video' in u.lower() or '.mp4' in u.lower() for u in media_urls):
-                    media_type = "video"
-                else:
-                    media_type = "image"
+                media_type = self._determine_media_type(pic_num, media_urls)
                 
                 created_at = json_data.get('created_at', '')
                 formatted_timestamp = self._format_timestamp(created_at)
                 
-                # 获取原始文本，优先使用 text_raw，否则使用 text
                 raw_text = json_data.get('text_raw', '') or json_data.get('text', '')
-                # 清理HTML标签，提取纯文本
                 clean_text = self._clean_html_text(raw_text)
                 
-                # 格式化作者字段：{用户名}(uid:{uid})
                 screen_name = user.get('screen_name', '')
                 user_id = user.get('id', '')
-                author = f"{screen_name}(uid:{user_id})" if screen_name and user_id else screen_name
+                author = self._format_author(screen_name, user_id)
                 
-                return {
-                    'url': url,
-                    'media_type': media_type,
-                    'title': '',
-                    'author': author,
-                    'desc': clean_text,
-                    'timestamp': formatted_timestamp,
-                    'video_size': None,
-                    'media_urls': media_urls,
-                }
+                return self._build_result_dict(
+                    url, media_type, author, clean_text, formatted_timestamp, media_urls
+                )
             else:
                 text = await response.text()
                 raise Exception(f"获取微博数据失败，状态码: {response.status}, 响应: {text}")
@@ -306,38 +463,21 @@ class WeiboParser(BaseVideoParser):
                             status = status_data.get('status', {})
                             user = status.get('user', {})
                             pic_num = len(status.get('pics', []))
-                            
-                            # 判断媒体类型
-                            if pic_num > 1:
-                                media_type = "gallery"
-                            elif any('video' in u.lower() or '.mp4' in u.lower() for u in media_urls):
-                                media_type = "video"
-                            else:
-                                media_type = "image"
+                            media_type = self._determine_media_type(pic_num, media_urls)
                             
                             created_at = status.get('created_at', '')
                             formatted_timestamp = self._format_timestamp(created_at)
                             
-                            # 获取原始文本，优先使用 text_raw，否则使用 text
                             raw_text = status.get('text_raw', '') or status.get('text', '')
-                            # 清理HTML标签，提取纯文本
                             clean_text = self._clean_html_text(raw_text)
                             
-                            # 格式化作者字段：{用户名}(uid:{uid})
                             screen_name = user.get('screen_name', '')
                             user_id = user.get('id', '')
-                            author = f"{screen_name}(uid:{user_id})" if screen_name and user_id else screen_name
+                            author = self._format_author(screen_name, user_id)
                             
-                            return {
-                                'url': url,
-                                'media_type': media_type,
-                                'title': '',
-                                'author': author,
-                                'desc': clean_text,
-                                'timestamp': formatted_timestamp,
-                                'video_size': None,
-                                'media_urls': media_urls,
-                            }
+                            return self._build_result_dict(
+                                url, media_type, author, clean_text, formatted_timestamp, media_urls
+                            )
                         else:
                             raise Exception("JSON 数据为空")
                     except json.JSONDecodeError as e:
@@ -390,25 +530,15 @@ class WeiboParser(BaseVideoParser):
                 if not media_urls:
                     raise Exception("未找到视频文件")
                 
-                # 尝试获取视频信息
                 playinfo = json_data.get('data', {}).get('Component_Play_Playinfo', {})
                 desc = playinfo.get('title', '') or playinfo.get('content1', '')
                 screen_name = playinfo.get('author', '') or playinfo.get('author_name', '')
                 user_id = playinfo.get('author_id', '') or playinfo.get('user', {}).get('id', '')
+                author = self._format_author(screen_name, user_id)
                 
-                # 格式化作者字段：{用户名}(uid:{uid})
-                author = f"{screen_name}(uid:{user_id})" if screen_name and user_id else screen_name
-                
-                return {
-                    'url': url,
-                    'media_type': 'video',
-                    'title': '',
-                    'author': author,
-                    'desc': desc,
-                    'timestamp': '',
-                    'video_size': None,
-                    'media_urls': media_urls,
-                }
+                return self._build_result_dict(
+                    url, 'video', author, desc, '', media_urls
+                )
             else:
                 text = await response.text()
                 raise Exception(f"获取视频数据失败，状态码: {response.status}, 响应: {text}")
@@ -424,7 +554,26 @@ class WeiboParser(BaseVideoParser):
         """
         media_urls = []
         
-        # 提取图片链接
+        # 方法1: 提取mix_media_info中的媒体（新格式，包含图片和视频）
+        mix_media_info = json_data.get('mix_media_info', {})
+        items = mix_media_info.get('items', [])
+        if items:
+            for item in items:
+                item_type = item.get('type', '')
+                data = item.get('data', {})
+                
+                if item_type == 'pic':
+                    pic_url = self._extract_pic_url(data)
+                    if pic_url:
+                        media_urls.append(pic_url)
+                
+                elif item_type == 'video':
+                    media_info = data.get('media_info', {})
+                    video_url = self._extract_video_url_from_media_info(media_info)
+                    if video_url:
+                        media_urls.append(video_url)
+        
+        # 方法2: 提取图片链接（pic_infos格式 - weibo.com标准格式）
         pic_infos = json_data.get('pic_infos', {})
         if pic_infos:
             for pic_id, pic_info in pic_infos.items():
@@ -438,28 +587,32 @@ class WeiboParser(BaseVideoParser):
                         continue
                 
                 # 对于普通图片，获取最高画质的图片链接
-                largest = pic_info.get('largest', {})
-                if largest:
-                    url = largest.get('url', '')
-                    if url:
-                        media_urls.append(url)
+                pic_url = self._extract_pic_url(pic_info)
+                if pic_url:
+                    media_urls.append(pic_url)
         
-        # 提取视频链接（page_info 中的视频）
+        # 方法3: 提取图片链接（pics数组格式 - 某些API返回格式）
+        pics = json_data.get('pics', [])
+        if pics:
+            for pic in pics:
+                pic_url = self._extract_pic_url(pic)
+                if pic_url:
+                    media_urls.append(pic_url)
+        
+        # 方法4: 提取视频链接（page_info 中的视频）
         page_info = json_data.get('page_info', {})
         if page_info:
+            urls = page_info.get('urls', {})
+            video_url = self._extract_video_url_from_dict(urls)
+            if video_url:
+                media_urls.append(video_url)
+            
             media_info = page_info.get('media_info', {})
-            if media_info:
-                # 尝试获取最高画质的视频链接
-                hd_url = media_info.get('hd_url', '')
-                if hd_url:
-                    media_urls.append(hd_url)
-                else:
-                    # 如果没有高清链接，使用普通链接
-                    stream_url = media_info.get('stream_url', '')
-                    if stream_url:
-                        media_urls.append(stream_url)
+            video_url = self._extract_video_url_from_media_info(media_info)
+            if video_url:
+                media_urls.append(video_url)
         
-        # 检查是否有其他视频格式
+        # 方法5: 检查是否有其他视频格式
         video_info = json_data.get('video_info', {})
         if video_info:
             video_url = video_info.get('video_details', {}).get('video_details', {})
@@ -489,24 +642,17 @@ class WeiboParser(BaseVideoParser):
         pics = status.get('pics', [])
         if pics:
             for pic in pics:
-                large = pic.get('large', {})
-                if large:
-                    url = large.get('url', '')
-                    if url:
-                        media_urls.append(url)
+                pic_url = self._extract_pic_url(pic)
+                if pic_url:
+                    media_urls.append(pic_url)
         
         # 提取视频链接
         page_info = status.get('page_info', {})
         if page_info and page_info.get('type') == 'video':
             urls = page_info.get('urls', {})
-            if urls:
-                # 直接选择第一个 URL（清晰度一般从高到低排序）
-                video_url = list(urls.values())[0]
-                if video_url:
-                    # 如果 URL 以 // 开头，补全协议
-                    if video_url.startswith('//'):
-                        video_url = 'https:' + video_url
-                    media_urls.append(video_url)
+            video_url = self._extract_video_url_from_dict(urls)
+            if video_url:
+                media_urls.append(video_url)
         
         return media_urls
 
@@ -523,16 +669,8 @@ class WeiboParser(BaseVideoParser):
         try:
             playinfo = json_data.get('data', {}).get('Component_Play_Playinfo', {})
             urls = playinfo.get('urls', {})
-            
-            if not urls:
-                return media_urls
-            
-            # 直接选择第一个 URL（清晰度一般从高到低排序）
-            video_url = list(urls.values())[0]
+            video_url = self._extract_video_url_from_dict(urls)
             if video_url:
-                # 如果 URL 以 // 开头，补全协议
-                if video_url.startswith('//'):
-                    video_url = 'https:' + video_url
                 media_urls.append(video_url)
         except Exception:
             pass
