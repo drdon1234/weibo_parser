@@ -234,11 +234,16 @@ class WeiboParser(BaseVideoParser):
                 # 清理HTML标签，提取纯文本
                 clean_text = self._clean_html_text(raw_text)
                 
+                # 格式化作者字段：{用户名}(uid:{uid})
+                screen_name = user.get('screen_name', '')
+                user_id = user.get('id', '')
+                author = f"{screen_name}(uid:{user_id})" if screen_name and user_id else screen_name
+                
                 return {
                     'url': url,
                     'media_type': media_type,
                     'title': '',
-                    'author': user.get('screen_name', ''),
+                    'author': author,
                     'desc': clean_text,
                     'timestamp': formatted_timestamp,
                     'video_size': None,
@@ -312,11 +317,16 @@ class WeiboParser(BaseVideoParser):
                             # 清理HTML标签，提取纯文本
                             clean_text = self._clean_html_text(raw_text)
                             
+                            # 格式化作者字段：{用户名}(uid:{uid})
+                            screen_name = user.get('screen_name', '')
+                            user_id = user.get('id', '')
+                            author = f"{screen_name}(uid:{user_id})" if screen_name and user_id else screen_name
+                            
                             return {
                                 'url': url,
                                 'media_type': media_type,
                                 'title': '',
-                                'author': user.get('screen_name', ''),
+                                'author': author,
                                 'desc': clean_text,
                                 'timestamp': formatted_timestamp,
                                 'video_size': None,
@@ -377,7 +387,11 @@ class WeiboParser(BaseVideoParser):
                 # 尝试获取视频信息
                 playinfo = json_data.get('data', {}).get('Component_Play_Playinfo', {})
                 desc = playinfo.get('title', '') or playinfo.get('content1', '')
-                author = playinfo.get('author', '') or playinfo.get('author_name', '')
+                screen_name = playinfo.get('author', '') or playinfo.get('author_name', '')
+                user_id = playinfo.get('author_id', '') or playinfo.get('user', {}).get('id', '')
+                
+                # 格式化作者字段：{用户名}(uid:{uid})
+                author = f"{screen_name}(uid:{user_id})" if screen_name and user_id else screen_name
                 
                 return {
                     'url': url,
