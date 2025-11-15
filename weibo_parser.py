@@ -31,7 +31,7 @@ class WeiboParser(BaseVideoParser):
             如果是微博链接返回True，否则返回False
         """
         patterns = [
-            r'weibo\.com/\d+/\d+',  # https://weibo.com/1566936885/5232446897127970
+            r'weibo\.com/\d+/[A-Za-z0-9]+',  # https://weibo.com/1566936885/5232446897127970 或 QdC5HtUjg
             r'weibo\.cn/status/\d+',  # https://weibo.cn/status/5232446897127970
             r'm\.weibo\.cn/detail/\d+',  # https://m.weibo.cn/detail/5221716881314113
             r'video\.weibo\.com/show\?fid=',  # https://video.weibo.com/show?fid=1034:5233218052358208
@@ -49,7 +49,7 @@ class WeiboParser(BaseVideoParser):
             提取到的微博链接列表
         """
         patterns = [
-            r'https?://weibo\.com/\d+/\d+',
+            r'https?://weibo\.com/\d+/[A-Za-z0-9]+',  # 数字ID或短ID格式
             r'https?://weibo\.cn/status/\d+',
             r'https?://m\.weibo\.cn/detail/\d+',
             r'https?://video\.weibo\.com/show\?fid=[\d:]+',
@@ -73,7 +73,8 @@ class WeiboParser(BaseVideoParser):
         Raises:
             ValueError: 无法识别的URL类型
         """
-        if re.search(r'weibo\.com/\d+/\d+', url) or re.search(r'weibo\.cn/status/\d+', url):
+        if (re.search(r'weibo\.com/\d+/[A-Za-z0-9]+', url) or 
+            re.search(r'weibo\.cn/status/\d+', url)):
             return 'weibo_com'
         elif re.search(r'm\.weibo\.cn/detail/\d+', url):
             return 'm_weibo_cn'
@@ -85,17 +86,22 @@ class WeiboParser(BaseVideoParser):
     def _extract_page_id(self, url: str) -> str:
         """从微博 URL 中提取页面 ID
         
+        支持数字ID和短ID格式：
+        - 数字ID: https://weibo.com/1566936885/5232446897127970
+        - 短ID: https://weibo.com/1566936885/QdC5HtUjg
+        
         Args:
             url: 微博链接
             
         Returns:
-            页面 ID
+            页面 ID（数字ID或短ID）
             
         Raises:
             ValueError: 无法提取页面 ID
         """
-        # 匹配类似 https://weibo.com/1566936885/5232446897127970 的 URL
-        match = re.search(r'/(\d+)$', url.rstrip('/'))
+        # 匹配类似 https://weibo.com/1566936885/5232446897127970 或 https://weibo.com/1566936885/QdC5HtUjg 的 URL
+        # 提取最后一个斜杠后的内容（数字或字母数字组合）
+        match = re.search(r'/([A-Za-z0-9]+)$', url.rstrip('/'))
         if match:
             return match.group(1)
         else:
