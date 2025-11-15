@@ -63,9 +63,11 @@ async def main():
     
     # 测试链接列表
     test_urls = [
-        "https://weibo.com/6004371911/5233241829410136",
-        "https://weibo.com/6004371911/5233249841580953",
-        "https://m.weibo.cn/detail/5224958596222067",
+        # "https://weibo.com/6004371911/5233241829410136",
+        # "https://weibo.com/6004371911/5233249841580953",
+        # "https://m.weibo.cn/detail/5224958596222067",
+        # "https://weibo.com/1566936885/QdC5HtUjg",
+        "https://weibo.com/1859841950/QdV89zORJ"
     ]
     
     parser = WeiboParser()
